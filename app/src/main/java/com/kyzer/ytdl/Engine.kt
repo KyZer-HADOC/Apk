@@ -210,9 +210,13 @@ object Engine {
         s.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().take(80).ifEmpty { "video" }
 
     private fun ffmpeg(args: List<String>, flag: CancelFlag) {
-        val session = FFmpegKit.executeWithArguments(args.toTypedArray())
+        val code = try {
+            FFmpegKit.executeWithArguments(args.toTypedArray()).returnCode
+        } catch (t: Throwable) {
+            throw IOException("FFmpeg could not start (${t.javaClass.simpleName}: ${t.message})")
+        }
         if (flag.cancelled) throw CancelledException()
-        if (!ReturnCode.isSuccess(session.returnCode)) throw IOException("Conversion failed")
+        if (!ReturnCode.isSuccess(code)) throw IOException("Conversion failed (code ${code?.value})")
     }
 
     /** Downloads in 4 MB Range chunks (avoids throttling). Supports pause/resume/cancel. */

@@ -7,6 +7,7 @@ import android.os.Build
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -69,6 +70,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -77,6 +79,8 @@ import androidx.compose.ui.unit.sp
 import com.arthenica.ffmpegkit.FFmpegKit
 import org.schabi.newpipe.extractor.NewPipe
 import org.schabi.newpipe.extractor.stream.StreamInfo
+import java.io.File
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -98,6 +102,11 @@ class MainActivity : ComponentActivity() {
             statusBarStyle = SystemBarStyle.dark(transparent),
             navigationBarStyle = SystemBarStyle.dark(transparent)
         )
+        val prevHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            try { File(filesDir, "crash.txt").writeText(Log.getStackTraceString(e).take(4000)) } catch (_: Throwable) {}
+            prevHandler?.uncaughtException(t, e)
+        }
         NewPipe.init(YtDownloader())
         val shared = if (intent?.action == Intent.ACTION_SEND) intent.getStringExtra(Intent.EXTRA_TEXT) else null
         setContent {
@@ -143,6 +152,9 @@ fun App(shared: String?) {
     var paused by remember { mutableStateOf(false) }
     var flag by remember { mutableStateOf(CancelFlag()) }
     var history by remember { mutableStateOf(HistoryStore.load(appCtx)) }
+    var crash by remember {
+        mutableStateOf(File(appCtx.filesDir, "crash.txt").takeIf { it.exists() }?.readText())
+    }
 
     DisposableEffect(task is Task.Running) {
         view.keepScreenOn = task is Task.Running
@@ -164,7 +176,7 @@ fun App(shared: String?) {
                 videoOpts = vo; mp3Opts = mo; thumb = bmp
                 selVideo = 0; selMp3 = 1; isVideo = true
                 info = i
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 error = "Couldn't load this video: ${e.message ?: "unknown error"}"
             }
             loading = false
@@ -199,8 +211,8 @@ fun App(shared: String?) {
                 )
                 history = HistoryStore.load(appCtx)
                 task = Task.Done(saved)
-            } catch (e: Exception) {
-                task = if (f.cancelled) Task.Idle else Task.Failed(e.message ?: "Download failed")
+            } catch (e: Throwable) {
+                task = if (f.cancelled) Task.Idle else Task.Failed(errText(e))
             }
         }
     }
@@ -233,6 +245,13 @@ fun App(shared: String?) {
     Surface(color = cBg, modifier = Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
             Header()
+            crash?.let {
+                CrashCard(
+                    it,
+                    onCopy = { clipboard.setText(AnnotatedString(it)) },
+                    onDismiss = { File(appCtx.filesDir, "crash.txt").delete(); crash = null }
+                )
+            }
             Tabs(tab, history.size) { tab = it }
             Spacer(Modifier.height(12.dp))
 
@@ -350,7 +369,7 @@ fun App(shared: String?) {
                     onPause = { paused = !paused; flag.paused = paused },
                     onCancel = {
                         flag.cancelled = true; flag.paused = false; paused = false
-                        FFmpegKit.cancel()
+                        try { FFmpegKit.cancel() } catch (_: Throwable) {}
                     },
                     onOpen = { open(it.uri.toString(), it.mime) },
                     onReset = { task = Task.Idle }
@@ -646,6 +665,26 @@ private fun BottomBar(
                     ) { Text("Dismiss", fontWeight = FontWeight.Bold) }
                 }
             }
+        }
+    }
+}
+
+private fun errText(e: Throwable): String =
+    if (e is IOException) e.message ?: "Network/IO error"
+    else "${e.javaClass.simpleName}: ${e.message ?: ""}"
+
+@Composable
+private fun CrashCard(text: String, onCopy: () -> Unit, onDismiss: () -> Unit) {
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 10.dp)
+            .clip(RoundedCornerShape(16.dp)).background(Color(0xFF3A1D22)).padding(14.dp)
+    ) {
+        Text("⚠  The app crashed last time", color = cAccent, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        Spacer(Modifier.height(6.dp))
+        Text(text.take(500), color = cText, fontSize = 11.sp, maxLines = 8, overflow = TextOverflow.Ellipsis)
+        Row {
+            TextButton(onClick = onCopy) { Text("Copy error", color = cText) }
+            TextButton(onClick = onDismiss) { Text("Dismiss", color = cAccent) }
         }
     }
 }
