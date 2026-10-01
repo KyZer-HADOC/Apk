@@ -11,12 +11,13 @@ import java.util.concurrent.TimeUnit
 const val USER_AGENT =
     "Mozilla/5.0 (Windows NT 10.0; rv:128.0) Gecko/20100101 Firefox/128.0"
 
+val httpClient: OkHttpClient = OkHttpClient.Builder()
+    .connectTimeout(20, TimeUnit.SECONDS)
+    .readTimeout(60, TimeUnit.SECONDS)
+    .build()
+
 /** HTTP layer that NewPipeExtractor needs, implemented with OkHttp. */
 class YtDownloader : Downloader() {
-
-    private val client = OkHttpClient.Builder()
-        .readTimeout(30, TimeUnit.SECONDS)
-        .build()
 
     override fun execute(request: Request): Response {
         val method = request.httpMethod()
@@ -37,7 +38,7 @@ class YtDownloader : Downloader() {
             values.forEach { builder.addHeader(name, it) }
         }
 
-        client.newCall(builder.build()).execute().use { r ->
+        httpClient.newCall(builder.build()).execute().use { r ->
             if (r.code == 429) {
                 throw ReCaptchaException("reCaptcha Challenge requested", request.url())
             }
