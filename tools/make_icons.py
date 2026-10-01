@@ -35,4 +35,6 @@ for name, px in {"mdpi": 48, "hdpi": 72, "xhdpi": 96, "xxhdpi": 144, "xxxhdpi": 
     out = f"app/src/main/res/mipmap-{name}"
     os.makedirs(out, exist_ok=True)
     canvas.resize((px, px), Image.LANCZOS).save(f"{out}/ic_launcher.png")
+os.makedirs("app/src/main/res/drawable-nodpi", exist_ok=True)
+canvas.resize((256, 256), Image.LANCZOS).save("app/src/main/res/drawable-nodpi/logo.png")
 print("Icons generated")

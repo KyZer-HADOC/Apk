@@ -11,6 +11,7 @@ import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -35,6 +36,7 @@ import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -70,6 +72,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -152,6 +155,8 @@ fun App(shared: String?) {
     var paused by remember { mutableStateOf(false) }
     var flag by remember { mutableStateOf(CancelFlag()) }
     var history by remember { mutableStateOf(HistoryStore.load(appCtx)) }
+    var settings by remember { mutableStateOf(SettingsStore.load(appCtx)) }
+    var showSettings by remember { mutableStateOf(false) }
     var crash by remember {
         mutableStateOf(File(appCtx.filesDir, "crash.txt").takeIf { it.exists() }?.readText())
     }
@@ -174,7 +179,11 @@ fun App(shared: String?) {
                 val mo = Engine.mp3Options(i)
                 val bmp = try { Engine.loadThumb(i) } catch (e: Exception) { null }
                 videoOpts = vo; mp3Opts = mo; thumb = bmp
-                selVideo = 0; selMp3 = 1; isVideo = true
+                val st = settings
+                selVideo = if (st.videoHeight == 0 || vo.isEmpty()) 0
+                else vo.indexOfFirst { it.height <= st.videoHeight }.takeIf { it >= 0 } ?: (vo.size - 1)
+                selMp3 = mo.indexOfFirst { it.kbps == st.mp3Kbps }.takeIf { it >= 0 } ?: 1
+                isVideo = st.format == "MP4" && vo.isNotEmpty()
                 info = i
             } catch (e: Throwable) {
                 error = "Couldn't load this video: ${e.message ?: "unknown error"}"
@@ -186,6 +195,7 @@ fun App(shared: String?) {
     fun startDownload() {
         val i = info ?: return
         val vid = isVideo
+        val st = settings
         val vo = videoOpts.getOrNull(selVideo)
         val mo = mp3Opts.getOrNull(selMp3)
         if (vid && vo == null) return
@@ -198,8 +208,8 @@ fun App(shared: String?) {
                 val progress = { stage: String, fr: Float?, d: String ->
                     task = Task.Running(stage, fr, d, i.name)
                 }
-                val saved = if (vid) Engine.runVideo(appCtx, i, vo!!, f, progress)
-                else Engine.runMp3(appCtx, i, mo!!, f, progress)
+                val saved = if (vid) Engine.runVideo(appCtx, i, vo!!, f, st, progress)
+                else Engine.runMp3(appCtx, i, mo!!, f, st, progress)
                 HistoryStore.add(
                     appCtx,
                     HistoryItem(
@@ -228,6 +238,22 @@ fun App(shared: String?) {
         }
     }
 
+    fun updateSettings(s: Settings) { settings = s; SettingsStore.save(appCtx, s) }
+
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            try {
+                ctx.contentResolver.takePersistableUriPermission(
+                    uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            } catch (_: Throwable) {}
+            val name = Uri.decode(uri.lastPathSegment ?: "").substringAfter(':').ifEmpty { "Chosen folder" }
+            updateSettings(settings.copy(saveMode = 2, customUri = uri.toString(), customName = name))
+        }
+    }
+
+    BackHandler(showSettings) { showSettings = false }
+
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         if (ok) startDownload()
         else Toast.makeText(ctx, "Storage permission is needed to save files", Toast.LENGTH_LONG).show()
@@ -244,7 +270,7 @@ fun App(shared: String?) {
 
     Surface(color = cBg, modifier = Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
-            Header()
+            Header(showSettings) { showSettings = !showSettings }
             crash?.let {
                 CrashCard(
                     it,
@@ -252,11 +278,15 @@ fun App(shared: String?) {
                     onDismiss = { File(appCtx.filesDir, "crash.txt").delete(); crash = null }
                 )
             }
-            Tabs(tab, history.size) { tab = it }
+            if (!showSettings) {
+                Tabs(tab, history.size) { tab = it }
+            }
             Spacer(Modifier.height(12.dp))
 
             Box(Modifier.weight(1f)) {
-                if (tab == 0) {
+                if (showSettings) {
+                    SettingsScreen(settings, { updateSettings(it) }, { folderPicker.launch(null) })
+                } else if (tab == 0) {
                     Column(
                         Modifier.fillMaxSize().verticalScroll(rememberScrollState())
                             .padding(horizontal = 20.dp)
@@ -356,7 +386,7 @@ fun App(shared: String?) {
             }
 
             val running = task is Task.Running
-            if ((tab == 0 && info != null) || running || (tab == 0 && task !is Task.Idle)) {
+            if ((!showSettings && tab == 0 && info != null) || running || (!showSettings && tab == 0 && task !is Task.Idle)) {
                 val label = if (isVideo) {
                     videoOpts.getOrNull(selVideo)?.let { "⬇  Download MP4 · ${it.label}" } ?: "No MP4 available"
                 } else {
@@ -381,23 +411,32 @@ fun App(shared: String?) {
 
 // ------------------------------------------------------------ small pieces
 @Composable
-private fun Header() {
+private fun Header(inSettings: Boolean, onSettings: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            Modifier.size(42.dp).clip(RoundedCornerShape(12.dp)).background(cAccent),
-            contentAlignment = Alignment.Center
-        ) { Text("▶", color = Color.White, fontSize = 18.sp) }
+        Image(
+            painter = painterResource(R.drawable.logo), contentDescription = null,
+            modifier = Modifier.size(46.dp).clip(RoundedCornerShape(12.dp))
+        )
         Spacer(Modifier.width(12.dp))
-        Column {
+        Column(Modifier.weight(1f)) {
             Row {
                 Text("KyZer ", color = cText, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
                 Text("YouBe", color = cAccent, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
             }
-            Text("Videos & music, your way", color = cSub, fontSize = 12.sp)
+            Text(
+                if (inSettings) "Settings" else "Videos & music, your way",
+                color = cSub, fontSize = 12.sp
+            )
         }
+        Box(
+            Modifier.size(42.dp).clip(CircleShape)
+                .background(if (inSettings) cAccent else cCard)
+                .clickable(onClick = onSettings),
+            contentAlignment = Alignment.Center
+        ) { Text(if (inSettings) "✕" else "⚙", color = Color.White, fontSize = 18.sp) }
     }
 }
 
@@ -633,7 +672,7 @@ private fun BottomBar(
             }
 
             is Task.Done -> {
-                Text("✓  Saved to Downloads/KyZer YouBe", color = cText, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                Text("✓  Saved to ${task.file.where}", color = cText, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 Spacer(Modifier.height(4.dp))
                 Text(task.file.name, color = cSub, fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(14.dp))
@@ -666,6 +705,69 @@ private fun BottomBar(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun Chip(text: String, selected: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier.clip(RoundedCornerShape(12.dp))
+            .background(if (selected) cAccent else cCard)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 18.dp, vertical = 11.dp)
+    ) {
+        Text(text, color = if (selected) Color.White else cSub, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+    }
+}
+
+@Composable
+private fun SectionTitle(text: String) {
+    Text(text, color = cText, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+    Spacer(Modifier.height(10.dp))
+}
+
+@Composable
+private fun SettingsScreen(s: Settings, onChange: (Settings) -> Unit, onPickFolder: () -> Unit) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp)) {
+        SectionTitle("Default format")
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            FormatTab("🎬  MP4 · Video", s.format == "MP4", Modifier.weight(1f)) { onChange(s.copy(format = "MP4")) }
+            FormatTab("🎵  MP3 · Audio", s.format == "MP3", Modifier.weight(1f)) { onChange(s.copy(format = "MP3")) }
+        }
+        Spacer(Modifier.height(24.dp))
+
+        SectionTitle("Default video quality")
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(0 to "Best", 1080 to "1080p", 720 to "720p", 480 to "480p", 360 to "360p").forEach { (h, t) ->
+                Chip(t, s.videoHeight == h) { onChange(s.copy(videoHeight = h)) }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text("If that quality isn't available, the closest lower one is used.", color = cSub, fontSize = 12.sp)
+        Spacer(Modifier.height(24.dp))
+
+        SectionTitle("Default MP3 quality")
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf(320, 256, 192, 128, 96, 64).forEach { k ->
+                Chip("$k kbps", s.mp3Kbps == k) { onChange(s.copy(mp3Kbps = k)) }
+            }
+        }
+        Spacer(Modifier.height(24.dp))
+
+        SectionTitle("Save location")
+        QualityRow(
+            "Gallery & Music", "", "Videos → Movies, MP3 → Music (shows in Gallery & music apps)", "",
+            s.saveMode == 0
+        ) { onChange(s.copy(saveMode = 0)) }
+        Spacer(Modifier.height(8.dp))
+        QualityRow("Downloads folder", "", "Downloads/KyZer YouBe", "", s.saveMode == 1) { onChange(s.copy(saveMode = 1)) }
+        Spacer(Modifier.height(8.dp))
+        QualityRow(
+            "Choose a folder…", "",
+            if (s.customName.isNotEmpty()) s.customName else "Pick any folder on your phone", "",
+            s.saveMode == 2
+        ) { onPickFolder() }
+        Spacer(Modifier.height(24.dp))
     }
 }
 

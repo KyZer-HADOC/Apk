@@ -8,6 +8,7 @@ import android.net.Uri
 import android.media.MediaScannerConnection
 import android.os.Build
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
@@ -42,7 +43,7 @@ data class Mp3Option(val kbps: Int, val sizeBytes: Long)
 
 object Engine {
 
-    data class Saved(val uri: Uri, val name: String, val mime: String, val size: Long)
+    data class Saved(val uri: Uri, val name: String, val mime: String, val size: Long, val where: String)
 
     // ---------------------------------------------------------------- options
 
@@ -125,7 +126,7 @@ object Engine {
     // --------------------------------------------------------------- download
 
     fun runVideo(
-        ctx: Context, info: StreamInfo, o: VideoOption, flag: CancelFlag,
+        ctx: Context, info: StreamInfo, o: VideoOption, flag: CancelFlag, st: Settings,
         onProgress: (String, Float?, String) -> Unit
     ): Saved {
         val work = freshWorkDir(ctx)
@@ -135,7 +136,7 @@ object Engine {
             if (audio == null) {
                 val f = File(work, "video.mp4")
                 download(o.video.content, f, flag) { d, t, sp -> onProgress("Downloading video", frac(d, t), det(d, t, sp)) }
-                return save(ctx, f, "$base - ${o.label}.mp4", "video/mp4")
+                return save(ctx, f, "$base - ${o.label}.mp4", "video/mp4", st)
             }
             val v = File(work, "v." + (o.video.format?.suffix ?: "mp4"))
             val a = File(work, "a." + (audio.format?.suffix ?: "m4a"))
@@ -148,14 +149,14 @@ object Engine {
             args += out.path
             ffmpeg(args, flag)
             val mime = if (o.container == "mp4") "video/mp4" else "video/x-matroska"
-            return save(ctx, out, "$base - ${o.label}.${o.container}", mime)
+            return save(ctx, out, "$base - ${o.label}.${o.container}", mime, st)
         } finally {
             work.deleteRecursively()
         }
     }
 
     fun runMp3(
-        ctx: Context, info: StreamInfo, o: Mp3Option, flag: CancelFlag,
+        ctx: Context, info: StreamInfo, o: Mp3Option, flag: CancelFlag, st: Settings,
         onProgress: (String, Float?, String) -> Unit
     ): Saved {
         val work = freshWorkDir(ctx)
@@ -168,14 +169,15 @@ object Engine {
             val out = File(work, "out.mp3")
             ffmpeg(
                 listOf(
-                    "-y", "-i", a.path, "-vn", "-c:a", "libmp3lame", "-b:a", "${o.kbps}k",
-                    "-id3v2_version", "3",
+                    "-y", "-i", a.path, "-vn", "-map", "0:a:0",
+                    "-c:a", "libmp3lame", "-b:a", "${o.kbps}k", "-ar", "44100", "-ac", "2",
+                    "-id3v2_version", "3", "-f", "mp3",
                     "-metadata", "title=${info.name}",
                     "-metadata", "artist=${info.uploaderName}",
                     out.path
                 ), flag
             )
-            return save(ctx, out, "$base - ${o.kbps}kbps.mp3", "audio/mpeg")
+            return save(ctx, out, "$base - ${o.kbps}kbps.mp3", "audio/mpeg", st)
         } finally {
             work.deleteRecursively()
         }
@@ -276,13 +278,21 @@ object Engine {
         onBytes(pos, pos, 0)
     }
 
-    private fun save(ctx: Context, file: File, name: String, mime: String): Saved {
+    private fun save(ctx: Context, file: File, name: String, mime: String, st: Settings): Saved {
+        if (st.saveMode == 2 && st.customUri.isNotEmpty()) {
+            return saveToTree(ctx, file, name, mime, Uri.parse(st.customUri), st.customName)
+        }
+        val isAudio = mime.startsWith("audio")
+        val dirType = when {
+            st.saveMode == 1 -> Environment.DIRECTORY_DOWNLOADS
+            isAudio -> Environment.DIRECTORY_MUSIC
+            else -> Environment.DIRECTORY_MOVIES
+        }
+        val where = "$dirType/KyZer YouBe"
+
         if (Build.VERSION.SDK_INT < 29) {
-            // Android 8/9: write straight into Downloads/KyZer YouBe
-            val dir = File(
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                "KyZer YouBe"
-            ).apply { mkdirs() }
+            val dir = File(Environment.getExternalStoragePublicDirectory(dirType), "KyZer YouBe")
+                .apply { mkdirs() }
             val dest = File(dir, name)
             file.copyTo(dest, overwrite = true)
             val latch = CountDownLatch(1)
@@ -292,23 +302,42 @@ object Engine {
                 latch.countDown()
             }
             latch.await(3, TimeUnit.SECONDS)
-            return Saved(scanned ?: Uri.fromFile(dest), name, mime, dest.length())
+            return Saved(scanned ?: Uri.fromFile(dest), name, mime, dest.length(), where)
+        }
+
+        val collection: Uri = when {
+            st.saveMode == 1 -> MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            isAudio -> MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+            else -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
         }
         val values = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, name)
-            put(MediaStore.Downloads.MIME_TYPE, mime)
-            put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/KyZer YouBe")
-            put(MediaStore.Downloads.IS_PENDING, 1)
+            put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+            put(MediaStore.MediaColumns.MIME_TYPE, mime)
+            put(MediaStore.MediaColumns.RELATIVE_PATH, where)
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
         val resolver = ctx.contentResolver
-        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
-            ?: throw IOException("Could not create file in Downloads")
+        val uri = resolver.insert(collection, values)
+            ?: throw IOException("Could not create file in $where")
         resolver.openOutputStream(uri)?.use { out ->
             file.inputStream().use { it.copyTo(out) }
         } ?: throw IOException("Could not write file")
         values.clear()
-        values.put(MediaStore.Downloads.IS_PENDING, 0)
+        values.put(MediaStore.MediaColumns.IS_PENDING, 0)
         resolver.update(uri, values, null, null)
-        return Saved(uri, name, mime, file.length())
+        return Saved(uri, name, mime, file.length(), where)
+    }
+
+    private fun saveToTree(
+        ctx: Context, file: File, name: String, mime: String, tree: Uri, folderName: String
+    ): Saved {
+        val resolver = ctx.contentResolver
+        val parent = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
+        val doc = DocumentsContract.createDocument(resolver, parent, mime, name)
+            ?: throw IOException("Could not create file in the chosen folder (pick it again in Settings)")
+        resolver.openOutputStream(doc)?.use { out ->
+            file.inputStream().use { it.copyTo(out) }
+        } ?: throw IOException("Could not write to the chosen folder")
+        return Saved(doc, name, mime, file.length(), folderName.ifEmpty { "chosen folder" })
     }
 }
