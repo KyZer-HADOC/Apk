@@ -34,6 +34,7 @@ android {
 }
 
 dependencies {
+    implementation("dev.ffmpegkit-maintained:yt-dlp-android:2.0.2")
     implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.4")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full:8.1.7")
