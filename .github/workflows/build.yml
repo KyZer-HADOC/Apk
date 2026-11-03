@@ -30,8 +30,8 @@ jobs:
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: KyZer-YouBe-Android-preview
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: KyZer-YouBe-Android-arm64-beta
+          path: app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -43,14 +43,14 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: KyZer-YouBe-Android-preview
+          name: KyZer-YouBe-Android-arm64-beta
           path: release-assets
       - name: Publish GitHub prerelease
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.1.0-beta
+          tag_name: v2.2.0-beta
           target_commitish: feature/android-multisite-download
-          name: KyZer YouBe Android v2.1.0 Beta
+          name: KyZer YouBe Android v2.2.0 Beta
           prerelease: true
           make_latest: false
           overwrite_files: true
@@ -59,9 +59,11 @@ jobs:
           body: |
             Android beta build for testing.
 
-            **New:** Adds an Android yt-dlp runtime and an Other DL tab for yt-dlp-supported sites, with MP4/MP3 selection and quality controls. The existing NewPipe-based YouTube workflow remains available.
+            **New:** Adds a WhatsApp Status tab that reads the WhatsApp .Statuses folder after the user grants access to the WhatsApp Media folder, and saves selected images/videos to the gallery. The Other DL yt-dlp tab and existing YouTube workflow are also included.
 
-            **Limitations:** The free yt-dlp runtime does not include TLS fingerprint impersonation, so TikTok/Facebook/Instagram may still fail when those sites block it. Download Later queue, WhatsApp Status browser, clip trimming, and subtitle UI are not included yet.
+            **Smaller APK:** Built for arm64-v8a only to avoid bundling unused x86_64 native libraries. This is suitable for modern 64-bit Android phones.
+
+            **Limitations:** The free yt-dlp runtime does not include TLS fingerprint impersonation, so TikTok/Facebook/Instagram may still fail when those sites block it. Download Later, clip trimming and subtitle UI are intentionally omitted.
 
             This is a debug-signed preview APK. If Android reports a signature conflict when installing over an older build, uninstall the old app first. Download history and settings stored by the old installation may be lost.
-          files: release-assets/app-debug.apk
+          files: release-assets/app-arm64-v8a-debug.apk
