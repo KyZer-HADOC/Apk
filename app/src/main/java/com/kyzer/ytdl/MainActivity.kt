@@ -1,11 +1,17 @@
 package com.kyzer.ytdl
 
 import android.Manifest
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.graphics.Bitmap
 import android.net.Uri
+import android.provider.MediaStore
+import android.os.Environment
+import dev.ffmpegkit_maintained.ytdlp.YtDlp
+import dev.ffmpegkit_maintained.ytdlp.YtDlpRequest
+import dev.ffmpegkit_maintained.ytdlp.DownloadProgressCallback
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
@@ -111,6 +117,7 @@ class MainActivity : ComponentActivity() {
             prevHandler?.uncaughtException(t, e)
         }
         NewPipe.init(YtDownloader())
+        try { YtDlp.init(applicationContext) } catch (e: Exception) { Log.e("KyZerYouBe", "yt-dlp init failed", e) }
         val shared = if (intent?.action == Intent.ACTION_SEND) intent.getStringExtra(Intent.EXTRA_TEXT) else null
         setContent {
             MaterialTheme(
@@ -141,6 +148,13 @@ fun App(shared: String?) {
     val urlRegex = remember { Regex("https?://\\S+") }
 
     var tab by remember { mutableIntStateOf(0) }
+    var otherUrl by remember { mutableStateOf("") }
+    var otherAudio by remember { mutableStateOf(false) }
+    var otherQuality by remember { mutableStateOf("720") }
+    var otherBusy by remember { mutableStateOf(false) }
+    var otherProgress by remember { mutableStateOf(0f) }
+    var otherStatus by remember { mutableStateOf("Paste a video link from TikTok, Facebook, Instagram or another supported site.") }
+    var otherSaved by remember { mutableStateOf<String?>(null) }
     var url by remember { mutableStateOf(urlRegex.find(shared ?: "")?.value ?: "") }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -227,6 +241,35 @@ fun App(shared: String?) {
         }
     }
 
+    fun startOtherDownload() {
+        val link = otherUrl.trim()
+        if (!link.startsWith("http://") && !link.startsWith("https://")) { otherStatus = "Please enter a valid http/https link."; return }
+        if (otherBusy) return
+        otherBusy = true; otherProgress = 0f; otherSaved = null; otherStatus = "Preparing download…"
+        thread {
+            try {
+                val baseDir = File(appCtx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "KyZer YouBe").apply { mkdirs() }
+                val before = baseDir.listFiles()?.map { it.absolutePath }?.toSet() ?: emptySet()
+                val template = File(baseDir, "%(title).100s.%(ext)s").absolutePath
+                val request = YtDlpRequest(link).setOutputTemplate(template).addOption("--no-playlist").addOption("--newline")
+                if (otherAudio) { request.addOption("-x").addOption("--audio-format", "mp3").addOption("--audio-quality", "0") }
+                else { val h = otherQuality.toIntOrNull() ?: 720; request.addOption("-f", "bestvideo[height<=$h]+bestaudio/best[height<=$h]/best"); request.addOption("--merge-output-format", "mp4") }
+                val response = YtDlp.executeAsync(request, DownloadProgressCallback { progress, eta, line ->
+                    otherProgress = (progress / 100f).coerceIn(0f, 1f)
+                    otherStatus = line.take(180).ifBlank { "Downloading · ETA ${eta}s" }
+                }).get()
+                if (!response.isSuccess) throw IOException("yt-dlp exited with code ${response.exitCode}")
+                val output = baseDir.listFiles()?.filter { it.isFile && it.absolutePath !in before }?.maxByOrNull { it.lastModified() } ?: throw IOException("Download finished but output file was not found.")
+                val mime = if (otherAudio) "audio/mpeg" else when (output.extension.lowercase()) { "webm" -> "video/webm"; "mkv" -> "video/x-matroska"; else -> "video/mp4" }
+                val values = ContentValues().apply { put(MediaStore.MediaColumns.DISPLAY_NAME, output.name); put(MediaStore.MediaColumns.MIME_TYPE, mime); put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/KyZer YouBe"); put(MediaStore.MediaColumns.IS_PENDING, 1) }
+                val uri = appCtx.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IOException("Could not create a file in Downloads.")
+                appCtx.contentResolver.openOutputStream(uri)?.use { out -> output.inputStream().use { it.copyTo(out) } } ?: throw IOException("Could not save downloaded file.")
+                values.clear(); values.put(MediaStore.MediaColumns.IS_PENDING, 0); appCtx.contentResolver.update(uri, values, null, null)
+                otherProgress = 1f; otherSaved = output.name; otherStatus = "Saved to Downloads/KyZer YouBe"
+            } catch (e: Throwable) { otherStatus = "Download failed: ${e.cause?.message ?: e.message ?: "Unknown error"}" }
+            finally { otherBusy = false }
+        }
+    }
     fun open(uri: String, mime: String) {
         try {
             ctx.startActivity(
@@ -375,6 +418,8 @@ fun App(shared: String?) {
                             Spacer(Modifier.height(12.dp))
                         }
                     }
+                } else if (tab == 2) {
+                    OtherDlScreen(otherUrl, { otherUrl = it }, otherAudio, { otherAudio = it }, otherQuality, { otherQuality = it }, otherBusy, otherProgress, otherStatus, otherSaved) { startOtherDownload() }
                 } else {
                     HistoryTab(
                         history,
@@ -409,6 +454,21 @@ fun App(shared: String?) {
     }
 }
 
+@Composable
+private fun OtherDlScreen(url: String, onUrl: (String) -> Unit, audio: Boolean, onAudio: (Boolean) -> Unit, quality: String, onQuality: (String) -> Unit, busy: Boolean, progress: Float, status: String, saved: String?, onDownload: () -> Unit) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("Other DL", color = cText, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+        Text("Download from supported websites using yt-dlp (1000+ extractors).", color = cSub, fontSize = 13.sp)
+        OutlinedTextField(value = url, onValueChange = onUrl, modifier = Modifier.fillMaxWidth(), placeholder = { Text("Paste TikTok / Facebook / Instagram / other link…", color = cSub) }, singleLine = true, shape = RoundedCornerShape(16.dp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = cAccent, unfocusedBorderColor = cCard2, focusedContainerColor = cCard, unfocusedContainerColor = cCard, cursorColor = cAccent))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { FormatTab("🎬  MP4 Video", !audio, Modifier.weight(1f)) { onAudio(false) }; FormatTab("🎵  MP3 Audio", audio, Modifier.weight(1f)) { onAudio(true) } }
+        if (!audio) { Text("Maximum video quality", color = cText, fontWeight = FontWeight.Bold); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("360", "480", "720", "1080").forEach { q -> Box(Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(if (quality == q) cAccent else cCard2).clickable { onQuality(q) }.padding(vertical = 12.dp), contentAlignment = Alignment.Center) { Text(q + "p", color = Color.White, fontWeight = FontWeight.Bold) } } } }
+        Button(onClick = onDownload, enabled = !busy, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(16.dp), colors = ButtonDefaults.buttonColors(containerColor = cAccent, disabledContainerColor = cCard2)) { Text(if (busy) "Downloading…" else "⬇  Download now", color = Color.White, fontWeight = FontWeight.Bold) }
+        if (busy || progress > 0f) { LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth(), color = cAccent); Text("${(progress * 100).toInt()}%", color = cText, fontWeight = FontWeight.Bold) }
+        Text(status, color = if (saved != null) Color(0xFF73D69B) else cSub, fontSize = 13.sp)
+        Text("Some websites may block the free extractor runtime or require cookies. Paid TLS-impersonation support is not included.", color = cSub, fontSize = 11.sp)
+        Spacer(Modifier.height(16.dp))
+    }
+}
 // ------------------------------------------------------------ small pieces
 @Composable
 private fun Header(inSettings: Boolean, onSettings: () -> Unit) {
@@ -447,6 +507,7 @@ private fun Tabs(tab: Int, count: Int, onTab: (Int) -> Unit) {
             .clip(RoundedCornerShape(14.dp)).background(cCard).padding(4.dp)
     ) {
         TabPill("⬇  Download", tab == 0, Modifier.weight(1f)) { onTab(0) }
+        TabPill("Other DL", tab == 2, Modifier.weight(1f)) { onTab(2) }
         TabPill("🕘  History ($count)", tab == 1, Modifier.weight(1f)) { onTab(1) }
     }
 }
