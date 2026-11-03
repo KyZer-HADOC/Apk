@@ -2,13 +2,13 @@
 
 A dark-themed Android video and audio downloader UI by **KyZer_HADOC**.
 
-> **Preview status:** This Android build currently provides the YouTube-focused download flow described below. The PC application's complete feature set is **not yet available on Android**. In particular, TikTok, Facebook, generic Other DL, WhatsApp Status, Download Later, queue management, clip trimming and subtitle downloads are not ready in this APK. The embedded yt-dlp engine has been added as integration groundwork, but it is not yet wired into the app's download screen.
+> **Preview status:** This Android build currently provides the YouTube-focused download flow described below. The PC application's complete feature set is **not yet available on Android**. In particular, TikTok, Facebook, generic Other DL, WhatsApp Status, Download Later, queue management, clip trimming and subtitle downloads are not ready in this APK. The yt-dlp multi-site runtime is intentionally excluded from this preview until it is fully connected to the Android UI; this avoids shipping a large unused dependency.
 
 ## Download
 
 1. Open the repository's **Releases** page.
 2. Download `app-debug.apk` from **KyZer YouBe Android v2.0.1 Preview**.
-3. Open the APK on your Android phone and allow installation from that source if Android asks.
+3. Open the APK on your Android phone and allow installation from that source if Android asks.\n\nDirect APK: [Download app-debug.apk](https://github.com/KyZer-HADOC/Apk/releases/download/v2.0.1-preview/app-debug.apk).
 
 The preview is debug-signed. If Android says the app cannot be installed because of a signature conflict, uninstall the previous build first, then install this APK. Uninstalling may erase the old app's local history and settings.
 
