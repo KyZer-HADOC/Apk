@@ -243,8 +243,14 @@ object Engine {
                     if (!r.isSuccessful) throw IOException("Server error ${r.code}")
                     val body = r.body ?: throw IOException("Empty response")
                     if (total < 0) {
-                        total = r.header("Content-Range")?.substringAfter('/')?.toLongOrNull()
-                            ?: body.contentLength()
+                        // A 206 Content-Length is only the current range size, not the
+                        // complete file size. Never treat it as the total download size.
+                        val rangeTotal = r.header("Content-Range")
+                            ?.substringAfter('/')?.toLongOrNull()
+                        if (rangeTotal != null) total = rangeTotal
+                        else if (r.code != 206 && body.contentLength() >= 0L) {
+                            total = body.contentLength()
+                        }
                     }
                     var got = 0L
                     var interrupted = false
@@ -272,6 +278,11 @@ object Engine {
                     if (interrupted) return@use
                     if (r.code != 206) total = pos
                     else if (got == 0L) throw IOException("Connection lost")
+                    else if (total < 0L && got < chunk) {
+                        // Some servers omit the total in Content-Range. A short final
+                        // range is enough to identify EOF without truncating earlier chunks.
+                        total = pos
+                    }
                 }
             }
         }
