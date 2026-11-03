@@ -29,7 +29,7 @@ The preview is debug-signed. If Android says the app cannot be installed because
 
 - Android 8.0 (API 26) or newer.
 - Internet connection.
-- ARM64 devices are recommended. The embedded yt-dlp dependency currently supports arm64-v8a and x86_64 only; broader ABI support has not been verified.
+- ARM64 devices are recommended; 32-bit ABI compatibility has not been verified.
 - Storage permission is requested only on older Android versions that need it. Newer Android versions use MediaStore or the Android folder picker.
 
 ## Build from source
@@ -57,7 +57,7 @@ The APK is written to:
 app/build/outputs/apk/debug/app-debug.apk
 ```
 
-GitHub Actions runs unit-test, lint and APK build tasks on pushes to `main` and `feature/pc-parity`. Successful builds are also uploaded as workflow artifacts.
+GitHub Actions runs the unit-test task, Android lint and APK build on pushes to `main` and `feature/pc-parity`. Successful builds are also uploaded as workflow artifacts. There are currently no dedicated automated unit-test cases, so manual device testing is still required.
 
 ## Troubleshooting
 
