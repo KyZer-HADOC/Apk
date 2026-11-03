@@ -87,3 +87,10 @@ Pause/resume is supported while network streams are downloading; conversion/merg
 ## Legal
 
 Only download content that you own or have permission to save. Respect the terms of service and copyright laws applicable to each platform. Platform access and extraction behavior may change without notice.
+
+
+## Android v2.1.0 beta — multi-site downloads
+
+The Android app now includes an **Other DL** tab backed by yt-dlp-android 2.0.2. It accepts direct links from yt-dlp-supported websites, offers MP4 video or MP3 audio, lets users select a maximum video height, and saves completed files to **Downloads/KyZer YouBe**. The existing NewPipe-based YouTube workflow remains available.
+
+**Important limitations:** the free yt-dlp Android runtime does not include curl-cffi TLS fingerprint impersonation; some sites (including TikTok/Facebook/Instagram in some cases) may reject requests. This beta does not yet include Download Later/queue, WhatsApp Status browsing, clip trimming, or subtitle controls. The embedded Python runtime makes the APK substantially larger and supports arm64-v8a and x86_64 only (not 32-bit ARM).
