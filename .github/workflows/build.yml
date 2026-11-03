@@ -1,4 +1,4 @@
-name: Android CI and Preview Release
+name: Android CI and GitHub Release
 
 on:
   push:
@@ -36,23 +36,25 @@ jobs:
           retention-days: 30
 
   preview-release:
-    name: Publish preview release
+    name: Publish Android release
     needs: verify
-    if: github.ref == 'refs/heads/feature/android-multisite-download'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: KyZer-YouBe-Android-arm64-beta
           path: release-assets
-      - name: Publish GitHub prerelease
+      - name: Rename APK asset
+        run: mv release-assets/app-arm64-v8a-debug.apk release-assets/KyZer-YouBe-Android.apk
+      - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.2.0-beta
-          target_commitish: feature/android-multisite-download
-          name: KyZer YouBe Android v2.2.0 Beta
-          prerelease: true
-          make_latest: false
+          tag_name: v2.2.1
+          target_commitish: main
+          name: KyZer YouBe Android v2.2.1
+          prerelease: false
+          make_latest: true
           overwrite_files: true
           generate_release_notes: true
           fail_on_unmatched_files: true
@@ -66,4 +68,4 @@ jobs:
             **Limitations:** The free yt-dlp runtime does not include TLS fingerprint impersonation, so TikTok/Facebook/Instagram may still fail when those sites block it. Download Later, clip trimming and subtitle UI are intentionally omitted.
 
             This is a debug-signed preview APK. If Android reports a signature conflict when installing over an older build, uninstall the old app first. Download history and settings stored by the old installation may be lost.
-          files: release-assets/app-arm64-v8a-debug.apk
+          files: release-assets/KyZer-YouBe-Android.apk
