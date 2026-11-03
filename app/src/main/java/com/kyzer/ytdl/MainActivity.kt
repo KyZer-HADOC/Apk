@@ -1,11 +1,18 @@
 package com.kyzer.ytdl
 
 import android.Manifest
+import android.annotation.SuppressLint
+import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.graphics.Bitmap
 import android.net.Uri
+import android.provider.MediaStore
+import android.os.Environment
+import dev.ffmpegkit_maintained.ytdlp.YtDlp
+import dev.ffmpegkit_maintained.ytdlp.YtDlpRequest
+import dev.ffmpegkit_maintained.ytdlp.DownloadProgressCallback
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
@@ -15,6 +22,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.documentfile.provider.DocumentFile
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -111,6 +119,7 @@ class MainActivity : ComponentActivity() {
             prevHandler?.uncaughtException(t, e)
         }
         NewPipe.init(YtDownloader())
+        try { YtDlp.init(applicationContext) } catch (e: Exception) { Log.e("KyZerYouBe", "yt-dlp init failed", e) }
         val shared = if (intent?.action == Intent.ACTION_SEND) intent.getStringExtra(Intent.EXTRA_TEXT) else null
         setContent {
             MaterialTheme(
@@ -122,6 +131,8 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+
+data class WhatsAppStatusFile(val uri: Uri, val name: String, val mime: String, val size: Long, val modified: Long)
 
 sealed interface Task {
     data object Idle : Task
@@ -141,6 +152,18 @@ fun App(shared: String?) {
     val urlRegex = remember { Regex("https?://\\S+") }
 
     var tab by remember { mutableIntStateOf(0) }
+    var otherUrl by remember { mutableStateOf("") }
+    var otherAudio by remember { mutableStateOf(false) }
+    var otherQuality by remember { mutableStateOf("720") }
+    var otherBusy by remember { mutableStateOf(false) }
+    var otherProgress by remember { mutableStateOf(0f) }
+    var otherStatus by remember { mutableStateOf("Paste a video link from TikTok, Facebook, Instagram or another supported site.") }
+    var otherSaved by remember { mutableStateOf<String?>(null) }
+    val waPrefs = remember { appCtx.getSharedPreferences("whatsapp_status", android.content.Context.MODE_PRIVATE) }
+    var waFolderUri by remember { mutableStateOf(waPrefs.getString("media_tree_uri", null)) }
+    var waStatuses by remember { mutableStateOf(emptyList<WhatsAppStatusFile>()) }
+    var waLoading by remember { mutableStateOf(false) }
+    var waMessage by remember { mutableStateOf("Choose your WhatsApp Media folder to view available statuses.") }
     var url by remember { mutableStateOf(urlRegex.find(shared ?: "")?.value ?: "") }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -227,6 +250,41 @@ fun App(shared: String?) {
         }
     }
 
+    @SuppressLint("NewApi")
+    fun startOtherDownload() {
+        val link = otherUrl.trim()
+        if (!link.startsWith("http://") && !link.startsWith("https://")) { otherStatus = "Please enter a valid http/https link."; return }
+        if (otherBusy) return
+        otherBusy = true; otherProgress = 0f; otherSaved = null; otherStatus = "Preparing download…"
+        thread {
+            try {
+                val baseDir = File(appCtx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "KyZer YouBe").apply { mkdirs() }
+                val jobDir = File(baseDir, "job-" + System.currentTimeMillis()).apply { mkdirs() }
+                val template = File(jobDir, "%(title).100s.%(ext)s").absolutePath
+                val request = YtDlpRequest(link).setOutputTemplate(template).addOption("--no-playlist").addOption("--newline")
+                if (otherAudio) { request.addOption("-x").addOption("--audio-format", "mp3").addOption("--audio-quality", "0") }
+                else { val h = otherQuality.toIntOrNull() ?: 720; request.addOption("-f", "bestvideo[height<=$h]+bestaudio/best[height<=$h]/best"); request.addOption("--merge-output-format", "mp4") }
+                val response = YtDlp.executeAsync(request, DownloadProgressCallback { progress, eta, line ->
+                    otherProgress = (progress / 100f).coerceIn(0f, 1f)
+                    otherStatus = line.take(180).ifBlank { "Downloading · ETA ${eta}s" }
+                }).get()
+                if (!response.isSuccess) throw IOException("yt-dlp exited with code ${response.exitCode}")
+                val output = jobDir.listFiles()?.filter { it.isFile }?.maxByOrNull { it.lastModified() } ?: throw IOException("Download finished but output file was not found.")
+                val mime = if (otherAudio) "audio/mpeg" else when (output.extension.lowercase()) { "webm" -> "video/webm"; "mkv" -> "video/x-matroska"; else -> "video/mp4" }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val values = ContentValues().apply { put(MediaStore.MediaColumns.DISPLAY_NAME, output.name); put(MediaStore.MediaColumns.MIME_TYPE, mime); put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/KyZer YouBe"); put(MediaStore.MediaColumns.IS_PENDING, 1) }
+                    val uri = appCtx.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IOException("Could not create a file in Downloads.")
+                    appCtx.contentResolver.openOutputStream(uri)?.use { out -> output.inputStream().use { it.copyTo(out) } } ?: throw IOException("Could not save downloaded file.")
+                    values.clear(); values.put(MediaStore.MediaColumns.IS_PENDING, 0); appCtx.contentResolver.update(uri, values, null, null)
+                } else {
+                    val legacyDir = File(appCtx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "KyZer YouBe").apply { mkdirs() }
+                    File(legacyDir, output.name).outputStream().use { out -> output.inputStream().use { it.copyTo(out) } }
+                }
+                otherProgress = 1f; otherSaved = output.name; otherStatus = "Saved to Downloads/KyZer YouBe"; jobDir.deleteRecursively()
+            } catch (e: Throwable) { otherStatus = "Download failed: ${e.cause?.message ?: e.message ?: "Unknown error"}" }
+            finally { otherBusy = false }
+        }
+    }
     fun open(uri: String, mime: String) {
         try {
             ctx.startActivity(
@@ -250,6 +308,92 @@ fun App(shared: String?) {
             val name = Uri.decode(uri.lastPathSegment ?: "").substringAfter(':').ifEmpty { "Chosen folder" }
             updateSettings(settings.copy(saveMode = 2, customUri = uri.toString(), customName = name))
         }
+    }
+
+
+    fun refreshWhatsAppStatuses() {
+        val savedUri = waFolderUri
+        if (savedUri.isNullOrBlank()) {
+            waStatuses = emptyList()
+            waMessage = "Choose the WhatsApp Media folder first."
+            return
+        }
+        waLoading = true
+        thread {
+            try {
+                val root = DocumentFile.fromTreeUri(appCtx, Uri.parse(savedUri))
+                    ?: throw IOException("Folder permission is no longer available. Select the folder again.")
+                val statusDir = if (root.name == ".Statuses") root else root.findFile(".Statuses")
+                    ?: throw IOException("Can't find .Statuses. Select WhatsApp/Media (not the WhatsApp folder).")
+                val found = statusDir.listFiles()
+                    .filter { it.isFile && (it.type?.startsWith("image/") == true || it.type?.startsWith("video/") == true) }
+                    .sortedByDescending { it.lastModified() }
+                    .map { WhatsAppStatusFile(it.uri, it.name ?: "WhatsApp status", it.type ?: "application/octet-stream", it.length(), it.lastModified()) }
+                waStatuses = found
+                waMessage = if (found.isEmpty()) "No saved statuses found. View the status in WhatsApp first, then tap Refresh." else "${found.size} status file(s) found."
+            } catch (e: Throwable) {
+                waStatuses = emptyList()
+                waMessage = e.message ?: "Unable to read WhatsApp statuses."
+            } finally { waLoading = false }
+        }
+    }
+
+    val waFolderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            try {
+                ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                waFolderUri = uri.toString()
+                waPrefs.edit().putString("media_tree_uri", uri.toString()).apply()
+                waMessage = "Folder connected. Loading statuses…"
+                refreshWhatsAppStatuses()
+            } catch (e: Throwable) {
+                waMessage = "Folder access failed: ${e.message}"
+            }
+        }
+    }
+
+    @SuppressLint("NewApi")
+    fun saveWhatsAppStatus(item: WhatsAppStatusFile) {
+        thread {
+            var destination: Uri? = null
+            try {
+                val isVideo = item.mime.startsWith("video/")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val collection = if (isVideo) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                    val relativePath = (if (isVideo) Environment.DIRECTORY_MOVIES else Environment.DIRECTORY_PICTURES) + "/KyZer YouBe/WhatsApp Statuses"
+                    val values = ContentValues().apply {
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, item.name)
+                        put(MediaStore.MediaColumns.MIME_TYPE, item.mime)
+                        put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+                        put(MediaStore.MediaColumns.IS_PENDING, 1)
+                    }
+                    destination = appCtx.contentResolver.insert(collection, values)
+                        ?: throw IOException("Couldn't create the destination file.")
+                    appCtx.contentResolver.openInputStream(item.uri)?.use { input ->
+                        appCtx.contentResolver.openOutputStream(destination!!)?.use { output -> input.copyTo(output) }
+                            ?: throw IOException("Couldn't open the destination file.")
+                    } ?: throw IOException("The WhatsApp status is no longer available.")
+                    values.clear()
+                    values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    appCtx.contentResolver.update(destination!!, values, null, null)
+                } else {
+                    val base = appCtx.getExternalFilesDir(if (isVideo) Environment.DIRECTORY_MOVIES else Environment.DIRECTORY_PICTURES)
+                        ?: throw IOException("External storage is unavailable.")
+                    val targetDir = File(base, "KyZer YouBe/WhatsApp Statuses").apply { mkdirs() }
+                    val target = File(targetDir, item.name)
+                    appCtx.contentResolver.openInputStream(item.uri)?.use { input -> target.outputStream().use { output -> input.copyTo(output) } }
+                        ?: throw IOException("The WhatsApp status is no longer available.")
+                }
+                waMessage = "Saved ${item.name} to ${if (isVideo) "Movies" else "Pictures"}/KyZer YouBe/WhatsApp Statuses"
+            } catch (e: Throwable) {
+                destination?.let { try { appCtx.contentResolver.delete(it, null, null) } catch (_: Throwable) {} }
+                waMessage = "Couldn't save status: ${e.message ?: "Unknown error"}"
+            }
+        }
+    }
+
+    LaunchedEffect(tab, waFolderUri) {
+        if (tab == 3 && waFolderUri != null && waStatuses.isEmpty() && !waLoading) refreshWhatsAppStatuses()
     }
 
     BackHandler(showSettings) { showSettings = false }
@@ -375,6 +519,16 @@ fun App(shared: String?) {
                             Spacer(Modifier.height(12.dp))
                         }
                     }
+                } else if (tab == 2) {
+                    OtherDlScreen(otherUrl, { otherUrl = it }, otherAudio, { otherAudio = it }, otherQuality, { otherQuality = it }, otherBusy, otherProgress, otherStatus, otherSaved) { startOtherDownload() }
+                } else if (tab == 3) {
+                    WhatsAppStatusScreen(
+                        statuses = waStatuses, loading = waLoading, message = waMessage,
+                        folderConnected = waFolderUri != null,
+                        onChooseFolder = { waFolderPicker.launch(null) },
+                        onRefresh = { refreshWhatsAppStatuses() },
+                        onSave = { saveWhatsAppStatus(it) }
+                    )
                 } else {
                     HistoryTab(
                         history,
@@ -405,6 +559,79 @@ fun App(shared: String?) {
                     onReset = { task = Task.Idle }
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun OtherDlScreen(url: String, onUrl: (String) -> Unit, audio: Boolean, onAudio: (Boolean) -> Unit, quality: String, onQuality: (String) -> Unit, busy: Boolean, progress: Float, status: String, saved: String?, onDownload: () -> Unit) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("Other DL", color = cText, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+        Text("Download from supported websites using yt-dlp (1000+ extractors).", color = cSub, fontSize = 13.sp)
+        OutlinedTextField(value = url, onValueChange = onUrl, modifier = Modifier.fillMaxWidth(), placeholder = { Text("Paste TikTok / Facebook / Instagram / other link…", color = cSub) }, singleLine = true, shape = RoundedCornerShape(16.dp), colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = cAccent, unfocusedBorderColor = cCard2, focusedContainerColor = cCard, unfocusedContainerColor = cCard, cursorColor = cAccent))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { FormatTab("🎬  MP4 Video", !audio, Modifier.weight(1f)) { onAudio(false) }; FormatTab("🎵  MP3 Audio", audio, Modifier.weight(1f)) { onAudio(true) } }
+        if (!audio) { Text("Maximum video quality", color = cText, fontWeight = FontWeight.Bold); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("360", "480", "720", "1080").forEach { q -> Box(Modifier.weight(1f).clip(RoundedCornerShape(10.dp)).background(if (quality == q) cAccent else cCard2).clickable { onQuality(q) }.padding(vertical = 12.dp), contentAlignment = Alignment.Center) { Text(q + "p", color = Color.White, fontWeight = FontWeight.Bold) } } } }
+        Button(onClick = onDownload, enabled = !busy, modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(16.dp), colors = ButtonDefaults.buttonColors(containerColor = cAccent, disabledContainerColor = cCard2)) { Text(if (busy) "Downloading…" else "⬇  Download now", color = Color.White, fontWeight = FontWeight.Bold) }
+        if (busy || progress > 0f) { LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth(), color = cAccent); Text("${(progress * 100).toInt()}%", color = cText, fontWeight = FontWeight.Bold) }
+        Text(status, color = if (saved != null) Color(0xFF73D69B) else cSub, fontSize = 13.sp)
+        Text("Some websites may block the free extractor runtime or require cookies. Paid TLS-impersonation support is not included.", color = cSub, fontSize = 11.sp)
+        Spacer(Modifier.height(16.dp))
+    }
+}
+@Composable
+private fun WhatsAppStatusScreen(
+    statuses: List<WhatsAppStatusFile>,
+    loading: Boolean,
+    message: String,
+    folderConnected: Boolean,
+    onChooseFolder: () -> Unit,
+    onRefresh: () -> Unit,
+    onSave: (WhatsAppStatusFile) -> Unit
+) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
+        Text("WhatsApp Status", color = cText, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+        Spacer(Modifier.height(5.dp))
+        Text("View and save images or videos from statuses you've already viewed in WhatsApp.", color = cSub, fontSize = 12.sp)
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = onChooseFolder, modifier = Modifier.weight(1f), shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = cAccent)) {
+                Text(if (folderConnected) "Change folder" else "Connect WhatsApp", color = Color.White, fontSize = 12.sp)
+            }
+            Button(onClick = onRefresh, enabled = folderConnected && !loading, shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = cCard2)) {
+                Text("↻ Refresh", color = cText, fontSize = 12.sp)
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(message, color = cSub, fontSize = 12.sp)
+        if (!folderConnected) {
+            Spacer(Modifier.height(12.dp))
+            Text("In the folder picker, open Android → media → com.whatsapp → WhatsApp → Media and select Media. For WhatsApp Business, choose com.whatsapp.w4b → WhatsApp Business → Media.", color = cSub, fontSize = 12.sp)
+        }
+        if (loading) {
+            Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = cAccent)
+            }
+        }
+        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(statuses, key = { it.uri.toString() }) { item ->
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(cCard).padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).background(cCard2), contentAlignment = Alignment.Center) {
+                        Text(if (item.mime.startsWith("video/")) "🎬" else "🖼", fontSize = 21.sp)
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(item.name, color = cText, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+                        Text("${if (item.mime.startsWith("video/")) "Video" else "Image"} · ${Engine.fmtSize(item.size)}", color = cSub, fontSize = 11.sp)
+                    }
+                    TextButton(onClick = { onSave(item) }) { Text("Save", color = cAccent, fontWeight = FontWeight.Bold) }
+                }
+            }
+            item { Spacer(Modifier.height(12.dp)) }
         }
     }
 }
@@ -446,8 +673,10 @@ private fun Tabs(tab: Int, count: Int, onTab: (Int) -> Unit) {
         Modifier.fillMaxWidth().padding(horizontal = 20.dp)
             .clip(RoundedCornerShape(14.dp)).background(cCard).padding(4.dp)
     ) {
-        TabPill("⬇  Download", tab == 0, Modifier.weight(1f)) { onTab(0) }
-        TabPill("🕘  History ($count)", tab == 1, Modifier.weight(1f)) { onTab(1) }
+        TabPill("Download", tab == 0, Modifier.weight(1f)) { onTab(0) }
+        TabPill("Other DL", tab == 2, Modifier.weight(1f)) { onTab(2) }
+        TabPill("WA Status", tab == 3, Modifier.weight(1f)) { onTab(3) }
+        TabPill("History", tab == 1, Modifier.weight(1f)) { onTab(1) }
     }
 }
 
@@ -461,7 +690,7 @@ private fun TabPill(text: String, selected: Boolean, modifier: Modifier, onClick
     ) {
         Text(
             text, color = if (selected) Color.White else cSub,
-            fontWeight = FontWeight.SemiBold, fontSize = 14.sp
+            fontWeight = FontWeight.SemiBold, fontSize = 11.sp
         )
     }
 }

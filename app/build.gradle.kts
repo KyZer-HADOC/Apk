@@ -12,11 +12,21 @@ android {
         applicationId = "com.kyzer.ytdl"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "2.0.1-preview"
+        versionCode = 5
+        versionName = "2.2.0-beta"
     }
 
     buildFeatures { compose = true }
+
+    // Ship only the native ABI used by modern Android phones to reduce APK size.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a")
+            isUniversalApk = false
+        }
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -26,6 +36,7 @@ android {
     kotlinOptions { jvmTarget = "17" }
 
     packaging {
+        jniLibs { useLegacyPackaging = true }
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "META-INF/DEPENDENCIES"
@@ -34,6 +45,8 @@ android {
 }
 
 dependencies {
+    implementation("dev.ffmpegkit-maintained:yt-dlp-android:2.0.2")
+    implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.4")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("dev.ffmpegkit-maintained:ffmpeg-kit-full:8.1.7")

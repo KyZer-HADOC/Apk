@@ -1,89 +1,46 @@
 # KyZer YouBe — Android
 
-A dark-themed Android video and audio downloader UI by **KyZer_HADOC**.
+Dark-themed Android downloader by **KyZer_HADOC**.
 
-> **Preview status:** This Android build currently provides the YouTube-focused download flow described below. The PC application's complete feature set is **not yet available on Android**. In particular, TikTok, Facebook, generic Other DL, WhatsApp Status, Download Later, queue management, clip trimming and subtitle downloads are not ready in this APK. The yt-dlp multi-site runtime is intentionally excluded from this preview until it is fully connected to the Android UI; this avoids shipping a large unused dependency.
+## Android v2.2.0 beta
 
-## Download
+- YouTube video and MP3 downloads with quality controls, progress, pause/resume/cancel and history.
+- **Other DL:** yt-dlp-supported sites with MP4/MP3 and quality selection. Some sites may block the free extractor runtime.
+- **WhatsApp Status:** browse and save viewed WhatsApp status images/videos after granting access to the WhatsApp Media folder.
+- Saved statuses are copied to Pictures/KyZer YouBe/WhatsApp Statuses or Movies/KyZer YouBe/WhatsApp Statuses.
 
-1. Open the repository's **Releases** page.
-2. Download `app-debug.apk` from **KyZer YouBe Android v2.0.1 Preview**.
-3. Open the APK on your Android phone and allow installation from that source if Android asks.
+### Connect WhatsApp Status
 
-Direct APK: [Download app-debug.apk](https://github.com/KyZer-HADOC/Apk/releases/download/v2.0.1-preview/app-debug.apk).
+1. Open **WA Status** in the app and tap **Connect WhatsApp**.
+2. In Android's folder picker, open Android/media/com.whatsapp/WhatsApp/Media and select the **Media** folder. For WhatsApp Business, use Android/media/com.whatsapp.w4b/WhatsApp Business/Media.
+3. Open/view a status in WhatsApp first, return to KyZer YouBe and tap **Refresh**.
+4. Tap **Save** beside an image or video.
 
-The preview is debug-signed. If Android says the app cannot be installed because of a signature conflict, uninstall the previous build first, then install this APK. Uninstalling may erase the old app's local history and settings.
+Only statuses already cached by WhatsApp are available. Expired or not-yet-viewed statuses cannot be fetched. Android's file picker may hide the .Statuses directory; select the parent **Media** folder so the app can look inside it.
 
-## Current Android features
+## APK size and compatibility
 
-- Paste a YouTube URL or use **Share → KyZer YouBe** from another app.
-- Load video title, channel, thumbnail and available stream qualities.
-- Download MP4 video at available resolutions.
-- Download and convert audio to MP3 (64–320 kbps choices).
-- Show download progress, transferred size and speed.
-- Pause, resume and cancel downloads during the download stage.
-- Save to Movies/Music, Downloads, or a folder selected through Android's folder picker.
-- Keep a local download history and open or remove history entries.
-- Dark interface with app settings for default format, quality and save location.
-- Save a crash report locally so the user can copy it for troubleshooting.
+This beta APK is built for **arm64-v8a only**, avoiding the unused x86_64 native libraries. It is intended for modern 64-bit Android phones, including Samsung Galaxy A05s. It will not install on 32-bit-only or x86 devices. The embedded yt-dlp/FFmpeg native runtimes still make it larger than the original YouTube-only build.
 
-## Requirements
+## Download and install
 
-- Android 8.0 (API 26) or newer.
-- Internet connection.
-- ARM64 devices are recommended; 32-bit ABI compatibility has not been verified.
-- Storage permission is requested only on older Android versions that need it. Newer Android versions use MediaStore or the Android folder picker.
+Open the GitHub Releases page and download app-arm64-v8a-debug.apk from **KyZer YouBe Android v2.2.0 Beta**.
 
-## Build from source
+This is a debug-signed beta. If Android reports a signature conflict, uninstall the previous differently signed build first; this can erase local history/settings.
 
-Requirements:
-- JDK 17
-- Gradle 8.9 (or compatible)
-- Android SDK with compile SDK 35
+## Build
 
-Build a debug APK:
+Requirements: JDK 17, Gradle 8.9, Android SDK 35.
 
-```bash
-gradle assembleDebug
-```
+    gradle testDebugUnitTest lintDebug assembleDebug
 
-Run the verification tasks:
-
-```bash
-gradle testDebugUnitTest lintDebug assembleDebug
-```
-
-The APK is written to:
-
-```
-app/build/outputs/apk/debug/app-debug.apk
-```
-
-GitHub Actions runs the unit-test task, Android lint and APK build on pushes to `main` and `feature/pc-parity`. Successful builds are also uploaded as workflow artifacts. There are currently no dedicated automated unit-test cases, so manual device testing is still required.
-
-## Troubleshooting
-
-- **Link not supported:** The current Android UI uses NewPipe Extractor and is primarily YouTube-focused. Other PC-supported platforms are not yet enabled in Android.
-- **No quality appears:** Try another video URL or retry later; stream availability can vary by video and region.
-- **Download stops or fails:** Check the internet connection and available storage, then retry.
-- **Cannot save to selected folder:** Re-select the folder in Settings to grant Android's folder permission again.
-- **APK signature conflict:** Remove the previous differently signed installation before installing this preview.
-- **App crash:** Use the crash card shown on the next launch and copy the report when submitting a bug report.
+The arm64 APK is generated at app/build/outputs/apk/debug/app-arm64-v8a-debug.apk.
 
 ## Known limitations
 
-This preview is not feature-equivalent to the Windows PC edition. The following are not yet implemented in the Android UI:
+- The free yt-dlp runtime lacks TLS fingerprint impersonation; TikTok/Facebook/Instagram can reject requests.
+- Download Later, queue management, clip trimming and subtitle downloads are intentionally omitted.
+- WhatsApp Status access depends on WhatsApp having cached the status and Android granting folder permission.
+- Physical-device testing is still required.
 
-- TikTok and Facebook extraction.
-- Generic URL / Other DL support.
-- WhatsApp Status media access.
-- Download Later and multi-item queue.
-- Start/end clip trimming.
-- Subtitle selection and download.
-- Full in-app video playback preview.
-
-Pause/resume is supported while network streams are downloading; conversion/merging stages are not pausable.
-
-## Legal
-
-Only download content that you own or have permission to save. Respect the terms of service and copyright laws applicable to each platform. Platform access and extraction behavior may change without notice.
+Only save content you own or have permission to download. Respect copyright and platform terms.
