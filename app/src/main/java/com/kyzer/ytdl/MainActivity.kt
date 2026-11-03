@@ -271,10 +271,15 @@ fun App(shared: String?) {
                 if (!response.isSuccess) throw IOException("yt-dlp exited with code ${response.exitCode}")
                 val output = jobDir.listFiles()?.filter { it.isFile }?.maxByOrNull { it.lastModified() } ?: throw IOException("Download finished but output file was not found.")
                 val mime = if (otherAudio) "audio/mpeg" else when (output.extension.lowercase()) { "webm" -> "video/webm"; "mkv" -> "video/x-matroska"; else -> "video/mp4" }
-                val values = ContentValues().apply { put(MediaStore.MediaColumns.DISPLAY_NAME, output.name); put(MediaStore.MediaColumns.MIME_TYPE, mime); put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/KyZer YouBe"); put(MediaStore.MediaColumns.IS_PENDING, 1) }
-                val uri = appCtx.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IOException("Could not create a file in Downloads.")
-                appCtx.contentResolver.openOutputStream(uri)?.use { out -> output.inputStream().use { it.copyTo(out) } } ?: throw IOException("Could not save downloaded file.")
-                values.clear(); values.put(MediaStore.MediaColumns.IS_PENDING, 0); appCtx.contentResolver.update(uri, values, null, null)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val values = ContentValues().apply { put(MediaStore.MediaColumns.DISPLAY_NAME, output.name); put(MediaStore.MediaColumns.MIME_TYPE, mime); put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/KyZer YouBe"); put(MediaStore.MediaColumns.IS_PENDING, 1) }
+                    val uri = appCtx.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IOException("Could not create a file in Downloads.")
+                    appCtx.contentResolver.openOutputStream(uri)?.use { out -> output.inputStream().use { it.copyTo(out) } } ?: throw IOException("Could not save downloaded file.")
+                    values.clear(); values.put(MediaStore.MediaColumns.IS_PENDING, 0); appCtx.contentResolver.update(uri, values, null, null)
+                } else {
+                    val legacyDir = File(appCtx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "KyZer YouBe").apply { mkdirs() }
+                    File(legacyDir, output.name).outputStream().use { out -> output.inputStream().use { it.copyTo(out) } }
+                }
                 otherProgress = 1f; otherSaved = output.name; otherStatus = "Saved to Downloads/KyZer YouBe"; jobDir.deleteRecursively()
             } catch (e: Throwable) { otherStatus = "Download failed: ${e.cause?.message ?: e.message ?: "Unknown error"}" }
             finally { otherBusy = false }
@@ -353,23 +358,32 @@ fun App(shared: String?) {
             var destination: Uri? = null
             try {
                 val isVideo = item.mime.startsWith("video/")
-                val collection = if (isVideo) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-                val relativePath = (if (isVideo) Environment.DIRECTORY_MOVIES else Environment.DIRECTORY_PICTURES) + "/KyZer YouBe/WhatsApp Statuses"
-                val values = ContentValues().apply {
-                    put(MediaStore.MediaColumns.DISPLAY_NAME, item.name)
-                    put(MediaStore.MediaColumns.MIME_TYPE, item.mime)
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
-                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val collection = if (isVideo) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                    val relativePath = (if (isVideo) Environment.DIRECTORY_MOVIES else Environment.DIRECTORY_PICTURES) + "/KyZer YouBe/WhatsApp Statuses"
+                    val values = ContentValues().apply {
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, item.name)
+                        put(MediaStore.MediaColumns.MIME_TYPE, item.mime)
+                        put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+                        put(MediaStore.MediaColumns.IS_PENDING, 1)
+                    }
+                    destination = appCtx.contentResolver.insert(collection, values)
+                        ?: throw IOException("Couldn't create the destination file.")
+                    appCtx.contentResolver.openInputStream(item.uri)?.use { input ->
+                        appCtx.contentResolver.openOutputStream(destination!!)?.use { output -> input.copyTo(output) }
+                            ?: throw IOException("Couldn't open the destination file.")
+                    } ?: throw IOException("The WhatsApp status is no longer available.")
+                    values.clear()
+                    values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    appCtx.contentResolver.update(destination!!, values, null, null)
+                } else {
+                    val base = appCtx.getExternalFilesDir(if (isVideo) Environment.DIRECTORY_MOVIES else Environment.DIRECTORY_PICTURES)
+                        ?: throw IOException("External storage is unavailable.")
+                    val targetDir = File(base, "KyZer YouBe/WhatsApp Statuses").apply { mkdirs() }
+                    val target = File(targetDir, item.name)
+                    appCtx.contentResolver.openInputStream(item.uri)?.use { input -> target.outputStream().use { output -> input.copyTo(output) } }
+                        ?: throw IOException("The WhatsApp status is no longer available.")
                 }
-                destination = appCtx.contentResolver.insert(collection, values)
-                    ?: throw IOException("Couldn't create the destination file.")
-                appCtx.contentResolver.openInputStream(item.uri)?.use { input ->
-                    appCtx.contentResolver.openOutputStream(destination!!)?.use { output -> input.copyTo(output) }
-                        ?: throw IOException("Couldn't open the destination file.")
-                } ?: throw IOException("The WhatsApp status is no longer available.")
-                values.clear()
-                values.put(MediaStore.MediaColumns.IS_PENDING, 0)
-                appCtx.contentResolver.update(destination!!, values, null, null)
                 waMessage = "Saved ${item.name} to ${if (isVideo) "Movies" else "Pictures"}/KyZer YouBe/WhatsApp Statuses"
             } catch (e: Throwable) {
                 destination?.let { try { appCtx.contentResolver.delete(it, null, null) } catch (_: Throwable) {} }
