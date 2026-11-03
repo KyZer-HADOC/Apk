@@ -1,6 +1,7 @@
 package com.kyzer.ytdl
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.content.ContentValues
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -249,6 +250,7 @@ fun App(shared: String?) {
         }
     }
 
+    @SuppressLint("NewApi")
     fun startOtherDownload() {
         val link = otherUrl.trim()
         if (!link.startsWith("http://") && !link.startsWith("https://")) { otherStatus = "Please enter a valid http/https link."; return }
@@ -345,6 +347,7 @@ fun App(shared: String?) {
         }
     }
 
+    @SuppressLint("NewApi")
     fun saveWhatsAppStatus(item: WhatsAppStatusFile) {
         thread {
             var destination: Uri? = null
