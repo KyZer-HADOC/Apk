@@ -249,8 +249,8 @@ fun App(shared: String?) {
         thread {
             try {
                 val baseDir = File(appCtx.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "KyZer YouBe").apply { mkdirs() }
-                val before = baseDir.listFiles()?.map { it.absolutePath }?.toSet() ?: emptySet()
-                val template = File(baseDir, "%(title).100s.%(ext)s").absolutePath
+                val jobDir = File(baseDir, "job-" + System.currentTimeMillis()).apply { mkdirs() }
+                val template = File(jobDir, "%(title).100s.%(ext)s").absolutePath
                 val request = YtDlpRequest(link).setOutputTemplate(template).addOption("--no-playlist").addOption("--newline")
                 if (otherAudio) { request.addOption("-x").addOption("--audio-format", "mp3").addOption("--audio-quality", "0") }
                 else { val h = otherQuality.toIntOrNull() ?: 720; request.addOption("-f", "bestvideo[height<=$h]+bestaudio/best[height<=$h]/best"); request.addOption("--merge-output-format", "mp4") }
@@ -259,13 +259,13 @@ fun App(shared: String?) {
                     otherStatus = line.take(180).ifBlank { "Downloading · ETA ${eta}s" }
                 }).get()
                 if (!response.isSuccess) throw IOException("yt-dlp exited with code ${response.exitCode}")
-                val output = baseDir.listFiles()?.filter { it.isFile && it.absolutePath !in before }?.maxByOrNull { it.lastModified() } ?: throw IOException("Download finished but output file was not found.")
+                val output = jobDir.listFiles()?.filter { it.isFile }?.maxByOrNull { it.lastModified() } ?: throw IOException("Download finished but output file was not found.")
                 val mime = if (otherAudio) "audio/mpeg" else when (output.extension.lowercase()) { "webm" -> "video/webm"; "mkv" -> "video/x-matroska"; else -> "video/mp4" }
                 val values = ContentValues().apply { put(MediaStore.MediaColumns.DISPLAY_NAME, output.name); put(MediaStore.MediaColumns.MIME_TYPE, mime); put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/KyZer YouBe"); put(MediaStore.MediaColumns.IS_PENDING, 1) }
                 val uri = appCtx.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: throw IOException("Could not create a file in Downloads.")
                 appCtx.contentResolver.openOutputStream(uri)?.use { out -> output.inputStream().use { it.copyTo(out) } } ?: throw IOException("Could not save downloaded file.")
                 values.clear(); values.put(MediaStore.MediaColumns.IS_PENDING, 0); appCtx.contentResolver.update(uri, values, null, null)
-                otherProgress = 1f; otherSaved = output.name; otherStatus = "Saved to Downloads/KyZer YouBe"
+                otherProgress = 1f; otherSaved = output.name; otherStatus = "Saved to Downloads/KyZer YouBe"; jobDir.deleteRecursively()
             } catch (e: Throwable) { otherStatus = "Download failed: ${e.cause?.message ?: e.message ?: "Unknown error"}" }
             finally { otherBusy = false }
         }
