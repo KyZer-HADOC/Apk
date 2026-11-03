@@ -21,6 +21,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.documentfile.provider.DocumentFile
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -130,6 +131,8 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+data class WhatsAppStatusFile(val uri: Uri, val name: String, val mime: String, val size: Long, val modified: Long)
+
 sealed interface Task {
     data object Idle : Task
     data class Running(val stage: String, val fraction: Float?, val detail: String, val title: String) : Task
@@ -155,6 +158,11 @@ fun App(shared: String?) {
     var otherProgress by remember { mutableStateOf(0f) }
     var otherStatus by remember { mutableStateOf("Paste a video link from TikTok, Facebook, Instagram or another supported site.") }
     var otherSaved by remember { mutableStateOf<String?>(null) }
+    val waPrefs = remember { appCtx.getSharedPreferences("whatsapp_status", android.content.Context.MODE_PRIVATE) }
+    var waFolderUri by remember { mutableStateOf(waPrefs.getString("media_tree_uri", null)) }
+    var waStatuses by remember { mutableStateOf(emptyList<WhatsAppStatusFile>()) }
+    var waLoading by remember { mutableStateOf(false) }
+    var waMessage by remember { mutableStateOf("Choose your WhatsApp Media folder to view available statuses.") }
     var url by remember { mutableStateOf(urlRegex.find(shared ?: "")?.value ?: "") }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -295,6 +303,82 @@ fun App(shared: String?) {
         }
     }
 
+
+    fun refreshWhatsAppStatuses() {
+        val savedUri = waFolderUri
+        if (savedUri.isNullOrBlank()) {
+            waStatuses = emptyList()
+            waMessage = "Choose the WhatsApp Media folder first."
+            return
+        }
+        waLoading = true
+        thread {
+            try {
+                val root = DocumentFile.fromTreeUri(appCtx, Uri.parse(savedUri))
+                    ?: throw IOException("Folder permission is no longer available. Select the folder again.")
+                val statusDir = if (root.name == ".Statuses") root else root.findFile(".Statuses")
+                    ?: throw IOException("Can't find .Statuses. Select WhatsApp/Media (not the WhatsApp folder).")
+                val found = statusDir.listFiles()
+                    .filter { it.isFile && (it.type?.startsWith("image/") == true || it.type?.startsWith("video/") == true) }
+                    .sortedByDescending { it.lastModified() }
+                    .map { WhatsAppStatusFile(it.uri, it.name ?: "WhatsApp status", it.type ?: "application/octet-stream", it.length(), it.lastModified()) }
+                waStatuses = found
+                waMessage = if (found.isEmpty()) "No saved statuses found. View the status in WhatsApp first, then tap Refresh." else "${found.size} status file(s) found."
+            } catch (e: Throwable) {
+                waStatuses = emptyList()
+                waMessage = e.message ?: "Unable to read WhatsApp statuses."
+            } finally { waLoading = false }
+        }
+    }
+
+    val waFolderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            try {
+                ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                waFolderUri = uri.toString()
+                waPrefs.edit().putString("media_tree_uri", uri.toString()).apply()
+                waMessage = "Folder connected. Loading statuses…"
+                refreshWhatsAppStatuses()
+            } catch (e: Throwable) {
+                waMessage = "Folder access failed: ${e.message}"
+            }
+        }
+    }
+
+    fun saveWhatsAppStatus(item: WhatsAppStatusFile) {
+        thread {
+            var destination: Uri? = null
+            try {
+                val isVideo = item.mime.startsWith("video/")
+                val collection = if (isVideo) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                val relativePath = (if (isVideo) Environment.DIRECTORY_MOVIES else Environment.DIRECTORY_PICTURES) + "/KyZer YouBe/WhatsApp Statuses"
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, item.name)
+                    put(MediaStore.MediaColumns.MIME_TYPE, item.mime)
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                destination = appCtx.contentResolver.insert(collection, values)
+                    ?: throw IOException("Couldn't create the destination file.")
+                appCtx.contentResolver.openInputStream(item.uri)?.use { input ->
+                    appCtx.contentResolver.openOutputStream(destination!!)?.use { output -> input.copyTo(output) }
+                        ?: throw IOException("Couldn't open the destination file.")
+                } ?: throw IOException("The WhatsApp status is no longer available.")
+                values.clear()
+                values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                appCtx.contentResolver.update(destination!!, values, null, null)
+                waMessage = "Saved ${item.name} to ${if (isVideo) "Movies" else "Pictures"}/KyZer YouBe/WhatsApp Statuses"
+            } catch (e: Throwable) {
+                destination?.let { try { appCtx.contentResolver.delete(it, null, null) } catch (_: Throwable) {} }
+                waMessage = "Couldn't save status: ${e.message ?: "Unknown error"}"
+            }
+        }
+    }
+
+    LaunchedEffect(tab, waFolderUri) {
+        if (tab == 3 && waFolderUri != null && waStatuses.isEmpty() && !waLoading) refreshWhatsAppStatuses()
+    }
+
     BackHandler(showSettings) { showSettings = false }
 
     val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
@@ -420,6 +504,14 @@ fun App(shared: String?) {
                     }
                 } else if (tab == 2) {
                     OtherDlScreen(otherUrl, { otherUrl = it }, otherAudio, { otherAudio = it }, otherQuality, { otherQuality = it }, otherBusy, otherProgress, otherStatus, otherSaved) { startOtherDownload() }
+                } else if (tab == 3) {
+                    WhatsAppStatusScreen(
+                        statuses = waStatuses, loading = waLoading, message = waMessage,
+                        folderConnected = waFolderUri != null,
+                        onChooseFolder = { waFolderPicker.launch(null) },
+                        onRefresh = { refreshWhatsAppStatuses() },
+                        onSave = { saveWhatsAppStatus(it) }
+                    )
                 } else {
                     HistoryTab(
                         history,
@@ -469,6 +561,64 @@ private fun OtherDlScreen(url: String, onUrl: (String) -> Unit, audio: Boolean, 
         Spacer(Modifier.height(16.dp))
     }
 }
+@Composable
+private fun WhatsAppStatusScreen(
+    statuses: List<WhatsAppStatusFile>,
+    loading: Boolean,
+    message: String,
+    folderConnected: Boolean,
+    onChooseFolder: () -> Unit,
+    onRefresh: () -> Unit,
+    onSave: (WhatsAppStatusFile) -> Unit
+) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
+        Text("WhatsApp Status", color = cText, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+        Spacer(Modifier.height(5.dp))
+        Text("View and save images or videos from statuses you've already viewed in WhatsApp.", color = cSub, fontSize = 12.sp)
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = onChooseFolder, modifier = Modifier.weight(1f), shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = cAccent)) {
+                Text(if (folderConnected) "Change folder" else "Connect WhatsApp", color = Color.White, fontSize = 12.sp)
+            }
+            Button(onClick = onRefresh, enabled = folderConnected && !loading, shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = cCard2)) {
+                Text("↻ Refresh", color = cText, fontSize = 12.sp)
+            }
+        }
+        Spacer(Modifier.height(10.dp))
+        Text(message, color = cSub, fontSize = 12.sp)
+        if (!folderConnected) {
+            Spacer(Modifier.height(12.dp))
+            Text("In the folder picker, open Android → media → com.whatsapp → WhatsApp → Media and select Media. For WhatsApp Business, choose com.whatsapp.w4b → WhatsApp Business → Media.", color = cSub, fontSize = 12.sp)
+        }
+        if (loading) {
+            Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = cAccent)
+            }
+        }
+        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(statuses, key = { it.uri.toString() }) { item ->
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(cCard).padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).background(cCard2), contentAlignment = Alignment.Center) {
+                        Text(if (item.mime.startsWith("video/")) "🎬" else "🖼", fontSize = 21.sp)
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(item.name, color = cText, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
+                        Text("${if (item.mime.startsWith("video/")) "Video" else "Image"} · ${Engine.fmtSize(item.size)}", color = cSub, fontSize = 11.sp)
+                    }
+                    TextButton(onClick = { onSave(item) }) { Text("Save", color = cAccent, fontWeight = FontWeight.Bold) }
+                }
+            }
+            item { Spacer(Modifier.height(12.dp)) }
+        }
+    }
+}
+
 // ------------------------------------------------------------ small pieces
 @Composable
 private fun Header(inSettings: Boolean, onSettings: () -> Unit) {
@@ -506,9 +656,10 @@ private fun Tabs(tab: Int, count: Int, onTab: (Int) -> Unit) {
         Modifier.fillMaxWidth().padding(horizontal = 20.dp)
             .clip(RoundedCornerShape(14.dp)).background(cCard).padding(4.dp)
     ) {
-        TabPill("⬇  Download", tab == 0, Modifier.weight(1f)) { onTab(0) }
+        TabPill("Download", tab == 0, Modifier.weight(1f)) { onTab(0) }
         TabPill("Other DL", tab == 2, Modifier.weight(1f)) { onTab(2) }
-        TabPill("🕘  History ($count)", tab == 1, Modifier.weight(1f)) { onTab(1) }
+        TabPill("WA Status", tab == 3, Modifier.weight(1f)) { onTab(3) }
+        TabPill("History", tab == 1, Modifier.weight(1f)) { onTab(1) }
     }
 }
 
@@ -522,7 +673,7 @@ private fun TabPill(text: String, selected: Boolean, modifier: Modifier, onClick
     ) {
         Text(
             text, color = if (selected) Color.White else cSub,
-            fontWeight = FontWeight.SemiBold, fontSize = 14.sp
+            fontWeight = FontWeight.SemiBold, fontSize = 11.sp
         )
     }
 }
